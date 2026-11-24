@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kernel-test – 3D Design Studio</title>
+<title>Kernel-test v2 – 3D Design Studio</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#14171c;color:#e6e9ee;margin:0;padding:16px;max-width:900px}
+body{font-family:system-ui,sans-serif;background:#14171c;color:#e6e9ee;margin:0;padding:16px;max-width:960px}
 h1{font-size:20px;margin:0 0 8px}
 p{color:#a9b1bd;line-height:1.5}
 #badge{display:inline-block;padding:8px 14px;border-radius:6px;font-weight:700;margin:8px 0 14px;background:#2d333d}
-.pass{color:#7ee2a0}.fail{color:#ff8a80}
+.pass{color:#7ee2a0}.fail{color:#ff8a80}.warn{color:#e0a458}
 #badge.pass{background:#12351f}#badge.fail{background:#3d1a1a}
-table{border-collapse:collapse;width:100%;font-size:14px}
-td{border-top:1px solid #2d333d;padding:6px 8px;vertical-align:top}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td{border-top:1px solid #2d333d;padding:6px 8px;vertical-align:top;word-break:break-word}
 td:first-child{font-weight:700;white-space:nowrap}
 em{color:#e0a458;font-style:normal}
 button{font:inherit;padding:8px 12px;margin-top:14px;border-radius:4px;border:1px solid #3a414d;background:#262b34;color:#e6e9ee;cursor:pointer}
@@ -20,8 +20,8 @@ pre{background:#1c2027;padding:10px;border-radius:6px;white-space:pre-wrap;font-
 </style>
 </head>
 <body>
-<h1>OpenCascade kernel-test</h1>
-<p>Tester om en ægte CAD-kerne (OpenCascade via replicad) kan indlæses og regne i din browser. Siden ændrer ingen filer og kræver ingen installation. Første indlæsning kan tage et stykke tid, fordi kernen er stor.</p>
+<h1>OpenCascade kernel-test (v2)</h1>
+<p>Finder en kombination af replicad og OpenCascade-WASM, der passer sammen, og tester den. Siden ændrer ingen filer og kræver ingen installation. Den kan hente op til ca. 10 store WASM-filer, så den første kørsel kan tage flere minutter. Fejlslagne forsøg er forventede og tæller ikke som fejl, så længe en kombination består.</p>
 <div id="badge">KØRER…</div>
 <table><tbody id="rows"></tbody></table>
 <button id="copy" hidden>Kopiér resultat</button>
@@ -32,107 +32,136 @@ const rows = [];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const msg = e => (e && e.message) ? e.message : String(e);
+const label = r => r.ok ? 'PASS' : (r.info ? 'FORSØG FEJLEDE' : 'FAIL');
 
 function draw() {
   $('rows').innerHTML = rows.map(r =>
-    `<tr class="${r.ok ? 'pass' : 'fail'}"><td>${r.ok ? 'PASS' : 'FAIL'}</td><td>${esc(r.name)}</td>` +
+    `<tr class="${r.ok ? 'pass' : (r.info ? 'warn' : 'fail')}"><td>${label(r)}</td><td>${esc(r.name)}</td>` +
     `<td>${esc(r.detail)}${r.hint ? '<br><em>' + esc(r.hint) + '</em>' : ''}</td></tr>`).join('');
 }
-function add(name, ok, detail, hint) { rows.push({ name, ok, detail, hint }); draw(); return ok; }
+function add(name, ok, detail, hint, info = false) { rows.push({ name, ok, detail, hint, info }); draw(); return ok; }
 
+let pinned = null;
 function finish() {
-  const ok = rows.length > 0 && rows.every(r => r.ok);
+  const counted = rows.filter(r => !r.info);
+  const ok = counted.length > 0 && counted.every(r => r.ok) && !!pinned;
   $('badge').textContent = ok ? 'SAMLET RESULTAT: PASS' : 'SAMLET RESULTAT: FAIL';
   $('badge').className = ok ? 'pass' : 'fail';
   const text = [
-    'Kernel-test: ' + (ok ? 'PASS' : 'FAIL'),
-    ...rows.map(r => `${r.ok ? 'PASS' : 'FAIL'} | ${r.name} | ${r.detail}${r.hint ? ' | ' + r.hint : ''}`),
+    'Kernel-test v2: ' + (ok ? 'PASS' : 'FAIL'),
+    pinned ? `Fungerende kombination: replicad@${pinned.R} + replicad-opencascadejs@${pinned.O}` : 'Ingen fungerende kombination fundet',
+    ...rows.map(r => `${label(r)} | ${r.name} | ${r.detail}${r.hint ? ' | ' + r.hint : ''}`),
     'Browser: ' + navigator.userAgent,
     'Enhedshukommelse (GB, hvis oplyst): ' + (navigator.deviceMemory ?? 'ukendt'),
     'Tidspunkt: ' + new Date().toISOString(),
   ].join('\n');
-  $('report').textContent = text; $('report').hidden = false;
-  $('copy').hidden = false;
+  $('report').textContent = text; $('report').hidden = false; $('copy').hidden = false;
   $('copy').onclick = async () => { try { await navigator.clipboard.writeText(text); $('copy').textContent = 'Kopieret'; } catch { $('copy').textContent = 'Markér teksten manuelt og kopiér'; } };
 }
 
 async function step(name, fn, hint) {
   const t0 = performance.now();
-  try {
-    const detail = await fn();
-    add(name, true, `${detail ?? 'OK'} (${Math.round(performance.now() - t0)} ms)`);
-    return true;
-  } catch (e) {
-    add(name, false, msg(e), hint);
-    return false;
-  }
+  try { add(name, true, `${(await fn()) ?? 'OK'} (${Math.round(performance.now() - t0)} ms)`); return true; }
+  catch (e) { add(name, false, msg(e), hint); return false; }
 }
+
+const J = async url => { const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`); return r.json(); };
+const parse = v => v.split('.').map(n => parseInt(n, 10) || 0);
+const cmp = (a, b) => { const x = parse(b), y = parse(a); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; }; // nyeste først
+async function versionsOf(pkg) {
+  const j = await J(`https://data.jsdelivr.com/v1/packages/npm/${pkg}`);
+  return (j.versions || []).map(v => v.version || v).filter(v => /^\d+\.\d+\.\d+$/.test(v)).sort(cmp);
+}
+async function declaredOC(R) {
+  try {
+    const pj = await J(`https://cdn.jsdelivr.net/npm/replicad@${R}/package.json`);
+    const range = [pj.dependencies, pj.peerDependencies, pj.devDependencies].map(d => d && d['replicad-opencascadejs']).find(Boolean);
+    if (!range || !/^[\d^~]/.test(range)) return null;
+    return (await J(`https://cdn.jsdelivr.net/npm/replicad-opencascadejs@${encodeURIComponent(range)}/package.json`)).version;
+  } catch { return null; }
+}
+
 const near = (got, want) => Math.abs(got - want) <= 1e-3 * Math.abs(want);
 const expect = (label, got, want) => {
   if (!near(got, want)) throw new Error(`${label}: fik ${got}, forventet ${want}`);
   return `${label}: ${got.toFixed(3)} (forventet ${want.toFixed(3)})`;
 };
 
-let rep, OC;
+// Indlæs ét par og kør en hurtig prøve (boks 10x20x30 = 6000 mm³).
+async function tryPair(R, O) {
+  const rep = await import(`https://esm.sh/replicad@${R}`);
+  for (const k of ['setOC', 'makeBaseBox', 'makeSphere', 'measureVolume'])
+    if (typeof rep[k] !== 'function') throw new Error('replicad mangler ' + k);
+  const base = `https://cdn.jsdelivr.net/npm/replicad-opencascadejs@${O}/src/replicad_single`;
+  let loader;
+  try { loader = (await import(base + '.js')).default; }
+  catch { loader = (await import(`https://esm.sh/replicad-opencascadejs@${O}/src/replicad_single.js`)).default; }
+  const OC = await loader({ locateFile: () => base + '.wasm' });
+  try {
+    rep.setOC(OC);
+    const v = rep.measureVolume(rep.makeBaseBox(10, 20, 30));
+    if (!near(v, 6000)) throw new Error('boks gav ' + v);
+  } catch (e) {
+    const keys = pat => Object.keys(OC).filter(k => pat.test(k)).slice(0, 12).join(', ') || '(ingen)';
+    throw new Error(`${msg(e)} | OC-klasser gp_Vec*: ${keys(/^gp_Vec/)} | BRepPrimAPI_MakeSphere*: ${keys(/^BRepPrimAPI_MakeSphere/)}`);
+  }
+  return rep;
+}
 
 await step('1. WebAssembly understøttes', () => {
   if (typeof WebAssembly !== 'object') throw new Error('Browseren understøtter ikke WebAssembly.');
   return 'WebAssembly findes';
-}, 'Prøv en nyere browser (Chrome, Edge, Firefox eller Safari).');
+}, 'Prøv en nyere browser.');
 
+let Rs = [], Os = [], pairs = [], rep = null;
 if (rows.every(r => r.ok)) {
-  await step('2. Hent biblioteket replicad (esm.sh)', async () => {
-    rep = await import('https://esm.sh/replicad');
-    for (const k of ['setOC', 'makeBaseBox', 'makeSphere', 'measureVolume']) {
-      if (typeof rep[k] !== 'function') throw new Error('Mangler funktionen ' + k + ' i replicad');
-    }
-    return 'replicad indlæst';
-  }, 'Netværket blokerer måske esm.sh, eller replicads API er ændret. Send fejlteksten til Claude.');
+  await step('2. Find tilgængelige versioner (jsDelivr)', async () => {
+    Rs = (await versionsOf('replicad')).slice(0, 5);
+    Os = (await versionsOf('replicad-opencascadejs')).slice(0, 5);
+    if (!Rs.length || !Os.length) throw new Error('Ingen versioner fundet');
+    return `replicad: ${Rs.join(', ')} | replicad-opencascadejs: ${Os.join(', ')}`;
+  }, 'Kunne ikke hente versionslisten. Netværket blokerer måske data.jsdelivr.com.');
 }
 
-if (rep) {
-  let loader = null;
-  await step('3. Hent OpenCascade-indlæseren', async () => {
-    const urls = [
-      'https://esm.sh/replicad-opencascadejs/src/replicad_single.js',
-      'https://cdn.jsdelivr.net/npm/replicad-opencascadejs/src/replicad_single.js',
-    ];
-    const errs = [];
-    for (const u of urls) {
-      try { const m = await import(u); loader = m.default; if (typeof loader !== 'function') throw new Error('ingen default-eksport'); return 'Hentet fra ' + new URL(u).host; }
-      catch (e) { errs.push(new URL(u).host + ': ' + msg(e)); }
-    }
-    throw new Error(errs.join(' | '));
-  }, 'Begge kilder fejlede. Send fejlteksten til Claude, så vælger vi en anden løsning.');
+if (Rs.length) {
+  const seen = new Set();
+  const push = (R, O, why) => { const k = R + '|' + O; if (O && !seen.has(k)) { seen.add(k); pairs.push([R, O, why]); } };
+  for (const R of Rs) { const d = await declaredOC(R); if (d) push(R, d, 'version angivet i replicads package.json'); }
+  for (const O of Os) push(Rs[0], O, 'nyeste replicad med nyere OpenCascade-build');
+  add('3. Kombinationer der prøves', true, pairs.map(p => `replicad@${p[0]} + opencascadejs@${p[1]}`).join('; ') || 'ingen', undefined);
 
-  if (loader) {
-    await step('4. Start OpenCascade (WASM-fil hentes)', async () => {
-      const wasm = 'https://cdn.jsdelivr.net/npm/replicad-opencascadejs/src/replicad_single.wasm';
-      OC = await loader({ locateFile: () => wasm });
-      rep.setOC(OC);
-      return 'Kernen er startet';
-    }, 'Kan skyldes for lidt hukommelse (typisk på mobil), blokeret download af .wasm-filen eller versionsforskel mellem pakkerne.');
+  for (const [R, O, why] of pairs) {
+    $('badge').textContent = `KØRER… prøver replicad@${R} + opencascadejs@${O}`;
+    const t0 = performance.now();
+    try {
+      rep = await tryPair(R, O);
+      pinned = { R, O };
+      add(`Forsøg: replicad@${R} + replicad-opencascadejs@${O}`, true, `Boks-prøve bestået (${why}, ${Math.round(performance.now() - t0)} ms)`);
+      break;
+    } catch (e) {
+      add(`Forsøg: replicad@${R} + replicad-opencascadejs@${O}`, false, msg(e), why, true);
+    }
   }
+  if (!pinned) add('4. Fandt en fungerende kombination', false, 'Ingen af de prøvede kombinationer bestod.', 'Send hele resultatet til Claude, så vælger vi en anden løsning.');
 }
 
-if (OC) {
+if (pinned) {
   const box = () => rep.makeBaseBox(10, 20, 30);
   await step('5. Volumen af boks 10×20×30 mm', () => expect('mm³', rep.measureVolume(box()), 6000));
   await step('6. Volumen af kugle, radius 10 mm', () => expect('mm³', rep.measureVolume(rep.makeSphere(10)), (4 / 3) * Math.PI * 1000));
-  await step('7. Boolean union (to adskilte bokse)', () => expect('mm³', rep.measureVolume(box().fuse(box().translateX(100))), 12000), 'Kan også skyldes, at testens funktionsnavn er forkert.');
-  await step('8. Boolean subtract (halv boks fjernes)', () => expect('mm³', rep.measureVolume(box().cut(rep.makeBaseBox(5, 20, 30))), 3000), 'Kan også skyldes, at testens funktionsnavn er forkert.');
+  await step('7. Boolean union (to adskilte bokse)', () => expect('mm³', rep.measureVolume(box().fuse(box().translateX(100))), 12000));
+  await step('8. Boolean subtract (halv boks fjernes)', () => expect('mm³', rep.measureVolume(box().cut(rep.makeBaseBox(5, 20, 30))), 3000));
   await step('9. Tessellering til visning (trekanter)', () => {
     const m = box().mesh({ tolerance: 0.1, angularTolerance: 0.1 });
     const n = (m.triangles?.length ?? 0) / 3;
     if (!(n >= 12)) throw new Error('For få trekanter: ' + n);
     return n + ' trekanter';
-  }, 'Nødvendigt for at vise CAD-geometri i Three.js.');
+  });
   await step('10. STEP-eksport', async () => {
-    const blob = box().blobSTEP();
-    const text = await blob.text();
+    const text = await box().blobSTEP().text();
     if (!text.includes('ISO-10303')) throw new Error('Filen ligner ikke en STEP-fil');
     return 'STEP-fil på ' + text.length + ' tegn';
-  }, 'Kan også skyldes, at testens funktionsnavn er forkert.');
+  });
 }
 
 finish();
